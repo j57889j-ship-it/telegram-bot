@@ -1,11 +1,22 @@
-import asyncio, logging, sqlite3, re, os
+import asyncio, logging, sqlite3, re, os, threading
 import pandas as pd
+from aiohttp import web # Uyg'oq turish uchun
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+
+# --- UYG'OQ TUTISH UCHUN VEB-SERVER ---
+async def handle(request):
+    return web.Response(text="Bot is live and running!")
+
+def run_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    # Render portni avtomat beradi, biz 8080 ishlatamiz
+    web.run_app(app, host='0.0.0.0', port=8080)
 
 # --- SOZLAMALAR ---
 TOKEN = "8787202401:AAFjQIkQrvKiZisdQwd27CuPC3Q7OwCHi3s"
@@ -61,6 +72,31 @@ async def start_cmd(message: types.Message, state: FSMContext):
     db_query("INSERT OR IGNORE INTO users (id, name) VALUES (?, ?)", (message.from_user.id, message.from_user.full_name))
     await message.answer(f"👋 Salom, **{message.from_user.full_name}**!", reply_markup=main_menu(message.from_user.id), parse_mode="Markdown")
 
+# --- ADMIN: TESTLAR BO'YICHA STATISTIKA ---
+async def admin_detailed_stats_menu(message: types.Message):
+    rows = db_query("SELECT kod FROM tests", fetch=True)
+    if not rows: return await message.answer("📭 Bazada testlar yo'q.")
+    
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📊 Kod: {r[0]} statistikasi", callback_data=f"stat_{r[0]}")] 
+        for r in rows
+    ])
+    await message.answer("📈 Qaysi test bo'yicha natijalarni ko'rmoqchisiz?", reply_markup=ikb)
+
+@dp.callback_query(F.data.startswith("stat_"))
+async def show_test_results(call: types.CallbackQuery):
+    test_kod = call.data.split("_")[1]
+    query = "SELECT u.name, r.ball, r.foiz FROM results r JOIN users u ON r.user_id = u.id WHERE r.kod = ? ORDER BY r.ball DESC"
+    results = db_query(query, (test_kod,), fetch=True)
+    
+    if not results: return await call.answer(f"⚠️ Natijalar yo'q.", show_alert=True)
+
+    text = f"📊 **Kod: {test_kod} bo'yicha natijalar:**\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
+    for i, (name, ball, foiz) in enumerate(results, 1):
+        text += f"{i}. **{name}** - `{ball}` ball ({foiz}%)\n"
+    await call.message.answer(text, parse_mode="Markdown")
+    await call.answer()
+
 # --- ASOSIY BOSHQARUV ---
 @dp.message(F.text.in_({"📝 Test ishlash", "📊 Natijalarim", "👤 Profilim", "📞 Admin", "⚙️ Admin Paneli", "📊 Batafsil Statistika", "📢 Xabar yuborish", "📥 Excel Yuklash", "⬅️ Orqaga"}))
 async def handle_buttons(message: types.Message, state: FSMContext):
@@ -86,31 +122,6 @@ async def handle_buttons(message: types.Message, state: FSMContext):
         await export_users_to_excel(message)
     elif t == "⬅️ Orqaga":
         await message.answer("🏠 Asosiy menyu", reply_markup=main_menu(message.from_user.id))
-
-# --- ADMIN: TESTLAR BO'YICHA STATISTIKA ---
-async def admin_detailed_stats_menu(message: types.Message):
-    rows = db_query("SELECT kod FROM tests", fetch=True)
-    if not rows: return await message.answer("📭 Bazada testlar yo'q.")
-    
-    ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📊 Kod: {r[0]} statistikasi", callback_data=f"stat_{r[0]}")] 
-        for r in rows
-    ])
-    await message.answer("📈 Qaysi test bo'yicha natijalarni ko'rmoqchisiz?", reply_markup=ikb)
-
-@dp.callback_query(F.data.startswith("stat_"))
-async def show_test_results(call: types.CallbackQuery):
-    test_kod = call.data.split("_")[1]
-    query = "SELECT u.name, r.ball, r.foiz FROM results r JOIN users u ON r.user_id = u.id WHERE r.kod = ? ORDER BY r.ball DESC"
-    results = db_query(query, (test_kod,), fetch=True)
-    
-    if not results: return await call.answer(f"⚠️ Natijalar yo'q.", show_alert=True)
-
-    text = f"📊 **Kod: {test_kod} bo'yicha natijalar:**\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n"
-    for i, (name, ball, foiz) in enumerate(results, 1):
-        text += f"{i}. **{name}** - `{ball}` ball ({foiz}%)\n"
-    await call.message.answer(text, parse_mode="Markdown")
-    await call.answer()
 
 # --- ADMIN: EXCEL EKSPORT ---
 async def export_users_to_excel(message: types.Message):
@@ -247,6 +258,9 @@ async def profile(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 async def main():
+    # Veb-serverni alohida oqimda ishga tushirish
+    threading.Thread(target=run_web_server, daemon=True).start()
+    
     init_db()
     await dp.start_polling(bot)
 
